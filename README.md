@@ -42,31 +42,48 @@ spoofing, or any destructive option.
 
 ## Architecture overview
 
-Layered and framework-agnostic, so storage and scan engines are swappable:
+PortScope is split into three backend packages plus the client, so the public
+API can later run on **Cloudflare Workers** while Nmap stays in a separate,
+trusted service. **Cloudflare Workers must never run Nmap** — that is the whole
+point of the split.
 
 ```
-client (React) ──HTTP──> Express routes (thin: validate + map HTTP)
-                              │
-                              ▼
-                         ScanService  ── business logic + scan lifecycle
-                          │         │       (pending → running → completed | failed)
-              ┌───────────┘         └────────────┐
-              ▼                                   ▼
-       ScanProvider (interface)           ScanRepository (interface)
-         └─ NmapScanProvider                 └─ InMemoryScanRepository
+                       ┌──────────────────────────────────────────┐
+ client (React, Vite)  │  worker-api  (Hono)                       │
+   │  /api  ─proxy──►   │  public API · validation · auth-ready ·   │
+   │                    │  rate limiting · scan orchestration       │
+   │                    │  runs on Node today, Cloudflare Workers   │
+   │                    │  later — SAME code                        │
+   │                    └───────────────┬──────────────────────────┘
+   │                        HTTP (SCANNER_AGENT_URL)
+   │                                    ▼
+   │                    ┌──────────────────────────────────────────┐
+   │                    │  scanner-agent  (Express, Node)           │
+   │                    │  TRUSTED internal service · resolve-first │
+   │                    │  gating · runs Nmap (spawn) · parses XML   │
+   │                    └──────────────────────────────────────────┘
+
+              shared  (@portscope/shared): types · zod schemas · target
+              validation — pure, no node:* — imported by worker + agent
 ```
 
-- **Routes** (`server/src/routes`) — thin HTTP layer; no business logic.
-- **ScanService** (`server/src/services`) — all business logic; owns the scan
-  status lifecycle and the resolve-first security gate.
-- **ScanProvider** (`server/src/providers`) — interface; `NmapScanProvider` is the
-  only implementation today. New engines can be added by implementing the
-  interface, with no API changes.
-- **ScanRepository** (`server/src/repositories`) — interface;
-  `InMemoryScanRepository` today, storage-agnostic by design.
+- **`worker-api`** (Hono) — the public API. Validates input, is auth-ready, rate
+  limits, and orchestrates the scan lifecycle (`pending → running →
+  completed | failed`). It calls the scanner-agent over HTTP via `fetch` and
+  **never executes Nmap**. The same Hono app runs locally on Node
+  (`@hono/node-server`) and on Cloudflare Workers later (`src/worker.ts` is the
+  prepared Workers entrypoint).
+- **`scanner-agent`** (Express) — a trusted internal Node service, the **only**
+  component that runs Nmap. It performs resolve-first private-range gating, runs
+  the allow-listed scan via `spawn`, and parses the XML. Not internet-facing.
+- **`shared`** (`@portscope/shared`) — runtime-agnostic types, zod schemas, and
+  syntactic target validation (pure, no `node:*`), imported by both services.
+- **Storage** — `InMemoryScanRepository` behind a `ScanRepository` interface in
+  the worker; a Supabase implementation swaps in later with no service changes.
 
-This keeps the door open for a future storage backend and hosting target with
-minimal refactoring, and for async jobs (the status model is already in place).
+> The Express-based Swagger UI from the previous version was removed during the
+> Workers migration (Express is not Workers-portable). API docs will return via a
+> Workers-compatible route in a later milestone.
 
 ---
 
@@ -95,21 +112,25 @@ full path (see configuration below).
 ```bash
 git clone https://github.com/yogi822/portscope.git
 cd portscope
-npm install                 # installs both workspaces (server + client)
+npm install                 # installs all workspaces (shared, worker-api, scanner-agent, client)
 cp .env.example .env        # optional; defaults are sensible
 ```
 
 ## How to run the app
 
 ```bash
-npm run dev                 # server :3001 + client :5173 together
+npm run dev                 # builds shared, then runs worker-api :3001 +
+                            # scanner-agent :3002 + client :5173 together
 ```
 
 Then open **http://localhost:5173**.
 
-- The Vite dev server proxies `/api` → `http://localhost:3001`, so the browser
-  only talks to one origin (no CORS setup needed).
-- API docs (Swagger UI): **http://localhost:3001/api/docs**
+- `npm run dev` builds `@portscope/shared` first, then starts all three services
+  with `concurrently`.
+- The Vite dev server proxies `/api` → `http://localhost:3001` (worker-api), so
+  the browser only talks to one origin (no CORS setup needed).
+- The worker-api reaches the scanner-agent at `SCANNER_AGENT_URL`
+  (default `http://localhost:3002`).
 
 `-sT` (TCP connect) scans are used, so **no root/sudo is required.**
 
@@ -127,24 +148,28 @@ curl -s -X POST http://localhost:3001/api/scans \
 ### Other scripts
 
 ```bash
-npm test                    # server test suite (validation, XML parsing, resolve-gate)
-npm run build               # type-check + build server and client
+npm test                    # all workspace suites (shared, worker-api, scanner-agent)
+npm run build               # build shared → scanner-agent → worker-api → client
 ```
+
+You can also run a single service, e.g. `npm run dev:worker`, `npm run dev:scanner`,
+or `npm run dev:client`.
 
 ## Configuration
 
 Environment variables (all optional; defaults shown):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3001` | Server port |
-| `LOCAL_SCAN_ENABLED` | `false` | Allow scanning private/internal ranges when `true` |
-| `SCAN_TIMEOUT_MS` | `60000` | Per-scan timeout (60s) |
-| `RATE_LIMIT_MAX` | `5` | Max scans per window, per IP |
-| `RATE_LIMIT_WINDOW_MS` | `300000` | Rate-limit window (5 min) |
-| `NMAP_BIN` | `nmap` | Path to the Nmap binary |
-| `HISTORY_LIMIT` | `50` | Scans retained in memory |
-| `LOG_LEVEL` | `info` | pino log level |
+| Variable | Service | Default | Description |
+|----------|---------|---------|-------------|
+| `PORT` | both | `3001` (worker) / `3002` (agent) | Port each service listens on |
+| `SCANNER_AGENT_URL` | worker-api | `http://localhost:3002` | URL the worker calls to run scans |
+| `LOCAL_SCAN_ENABLED` | both | `false` | Allow scanning private/internal ranges when `true` |
+| `SCAN_TIMEOUT_MS` | both | `60000` | Per-scan timeout / worker call budget |
+| `RATE_LIMIT_MAX` | worker-api | `5` | Max scans per window, per IP |
+| `RATE_LIMIT_WINDOW_MS` | worker-api | `300000` | Rate-limit window (5 min) |
+| `NMAP_BIN` | scanner-agent | `nmap` | Path to the Nmap binary |
+| `HISTORY_LIMIT` | worker-api | `50` | Scans retained in memory |
+| `LOG_LEVEL` | both | `info` | Log level |
 
 ## REST API
 
@@ -156,7 +181,6 @@ Base URL: `http://localhost:3001`
 | `GET` | `/api/scans` | List scan history (newest first) |
 | `GET` | `/api/scans/:id` | Get one scan (full parsed result) |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/docs` | Swagger UI |
 
 ---
 
@@ -273,16 +297,14 @@ the run. Unit tests and build live in the separate CI workflow (see above).
 
 ## Roadmap
 
-Milestone 1 (current) delivers a clean, secure local MVP. Possible next steps:
-
-- [ ] Persistent storage backend for scan history
-- [ ] Asynchronous scan jobs (the status model is already in place)
-- [ ] Additional scan providers behind the existing `ScanProvider` interface
-- [ ] Authentication / multi-user support
-- [ ] Export results (JSON / CSV)
 - [x] CI pipeline (test, build, audit) — GitHub Actions
 - [x] DevSecOps security pipeline (Gitleaks, Semgrep, OWASP CVE Lite CLI)
-- [ ] Deployment target for hosted use
+- [x] Workers-ready architecture — Hono worker-api + separate scanner-agent + shared package
+- [ ] Deploy worker-api to Cloudflare Workers (add `wrangler.toml`, read `env` bindings)
+- [ ] Persistent storage backend (Supabase) behind the `ScanRepository` interface
+- [ ] Authentication / multi-user support (auth-ready hook already in place)
+- [ ] Asynchronous scan jobs (the status model is already in place)
+- [ ] Re-introduce a Workers-compatible OpenAPI/docs route
 
 ## License
 
