@@ -75,42 +75,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # Python 3.12 no longer bundles setuptools, and Semgrep imports
-      # pkg_resources (provided by setuptools) at runtime. Install the packaging
-      # tools as their own step FIRST so they are guaranteed present/importable.
-      - name: Prepare Python packaging tools
-        run: python -m pip install --upgrade pip setuptools wheel
-
-      # Fail fast with a clear message if pkg_resources still isn't importable.
-      - name: Verify pkg_resources is importable
-        run: python -c "import pkg_resources; print('pkg_resources OK')"
-
-      - name: Install Semgrep
-        run: python -m pip install "semgrep==${SEMGREP_VERSION}"
-
-      - name: Print tool versions
+      # Official Semgrep ships as the semgrep/semgrep container image (the
+      # dedicated semgrep-action was archived in 2024). Run it via docker so the
+      # job stays on ubuntu-latest and the JS-based checkout / SARIF-upload /
+      # artifact steps keep a Node runtime — the Semgrep image has no Node. No
+      # Python/pip is involved. Semgrep respects .gitignore, so node_modules/
+      # dist/build are skipped. --severity=ERROR + --error keeps the gate
+      # identical: fail the job ONLY on ERROR-severity findings.
+      - name: Run Semgrep (official image, fail on ERROR)
         run: |
-          python --version
-          pip --version
-          semgrep --version
-
-      # Semgrep respects .gitignore (node_modules/dist/build skipped).
-      # --severity=ERROR + --error => fail the job only on ERROR-level findings.
-      - name: Run Semgrep (fail on ERROR)
-        run: |
-          semgrep scan \
-            --config=p/security-audit \
-            --config=p/owasp-top-ten \
-            --config=p/nodejs \
-            --config=p/typescript \
-            --severity=ERROR \
-            --sarif --output=semgrep.sarif \
-            --error
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" -w /src \
+            "semgrep/semgrep:${SEMGREP_VERSION}" \
+            semgrep scan \
+              --config=p/security-audit \
+              --config=p/owasp-top-ten \
+              --config=p/nodejs \
+              --config=p/typescript \
+              --severity=ERROR \
+              --sarif --output=semgrep.sarif \
+              --error
 
       - name: Publish SAST report
         if: always()
