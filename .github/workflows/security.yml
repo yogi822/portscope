@@ -80,10 +80,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      # setuptools first: Python 3.12 no longer bundles it and Semgrep imports
-      # pkg_resources at runtime (otherwise: ModuleNotFoundError before scanning).
+      # Python 3.12 no longer bundles setuptools, and Semgrep imports
+      # pkg_resources (provided by setuptools) at runtime. Install the packaging
+      # tools as their own step FIRST so they are guaranteed present/importable.
+      - name: Prepare Python packaging tools
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      # Fail fast with a clear message if pkg_resources still isn't importable.
+      - name: Verify pkg_resources is importable
+        run: python -c "import pkg_resources; print('pkg_resources OK')"
+
       - name: Install Semgrep
-        run: python -m pip install --disable-pip-version-check setuptools "semgrep==${SEMGREP_VERSION}"
+        run: python -m pip install "semgrep==${SEMGREP_VERSION}"
+
+      - name: Print tool versions
+        run: |
+          python --version
+          pip --version
+          semgrep --version
 
       # Semgrep respects .gitignore (node_modules/dist/build skipped).
       # --severity=ERROR + --error => fail the job only on ERROR-level findings.
