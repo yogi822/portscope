@@ -1,0 +1,47 @@
+name: CI
+
+# Run on PRs targeting main and on pushes to main.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # Built-in npm dependency caching (keyed off package-lock.json).
+          cache: npm
+
+      # Nmap is intentionally NOT installed: the test suite uses XML fixtures
+      # and an injected fake DNS resolver, so no real scans run in CI.
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "package-lock.json found — using npm ci"
+            npm ci
+          else
+            echo "no package-lock.json — using npm install"
+            npm install
+          fi
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Report vulnerabilities but do not fail the build for now (Milestone 2).
+      - name: Security audit (non-blocking)
+        continue-on-error: true
+        run: npm audit --audit-level=high

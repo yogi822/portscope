@@ -1,5 +1,7 @@
 # PortScope
 
+[![CI](https://github.com/yogi822/portscope/actions/workflows/ci.yml/badge.svg)](https://github.com/yogi822/portscope/actions/workflows/ci.yml)
+
 A small, secure, local web GUI for running **authorized, limited** [Nmap](https://nmap.org/)
 scans and viewing the results in a clean dashboard.
 
@@ -193,6 +195,22 @@ Unauthorized scanning may violate computer-misuse and anti-hacking laws. The
 authors accept no liability for misuse. By using this tool you agree that you are
 solely responsible for ensuring your scans are lawful and authorized.
 
+## CI/CD
+
+Every pull request to `main` and every push to `main` runs a GitHub Actions
+workflow ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) on
+`ubuntu-latest` with Node.js 20. It:
+
+- installs dependencies (`npm ci` when `package-lock.json` is present, otherwise
+  `npm install`), with npm dependency caching;
+- runs the test suite (`npm test`);
+- type-checks and builds both workspaces (`npm run build`);
+- runs a **non-blocking** security audit (`npm audit --audit-level=high`) — the
+  result is printed but does not fail the build for now.
+
+Nmap is **not** installed in CI: the tests use XML fixtures and an injected fake
+DNS resolver, so no real scans run.
+
 ## Roadmap
 
 Milestone 1 (current) delivers a clean, secure local MVP. Possible next steps:
@@ -202,7 +220,7 @@ Milestone 1 (current) delivers a clean, secure local MVP. Possible next steps:
 - [ ] Additional scan providers behind the existing `ScanProvider` interface
 - [ ] Authentication / multi-user support
 - [ ] Export results (JSON / CSV)
-- [ ] CI pipeline (lint, test, build)
+- [x] CI pipeline (test, build, audit) — GitHub Actions
 - [ ] Deployment target for hosted use
 
 ## License
