@@ -211,6 +211,50 @@ workflow ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) on
 Nmap is **not** installed in CI: the tests use XML fixtures and an injected fake
 DNS resolver, so no real scans run.
 
+## Security Pipeline
+
+In addition to CI, a dedicated **DevSecOps** workflow
+([`.github/workflows/security.yml`](./.github/workflows/security.yml)) runs on
+every push and pull request to `main`. Each stage is **blocking** — the workflow
+fails if a tool reports findings at its threshold.
+
+```mermaid
+flowchart TD
+    Dev[Developer] --> Push[Git Push]
+    Push --> GHA[GitHub Actions]
+    GHA --> Tests[Unit Tests]
+    GHA --> Build[Build]
+    GHA --> Gitleaks[Gitleaks]
+    GHA --> Semgrep[Semgrep]
+    GHA --> CVE[OWASP CVE Lite CLI]
+```
+
+- **Gitleaks** — scans the entire git history for hard-coded secrets (API keys,
+  tokens, private keys). Uses the default ruleset with only `node_modules/`,
+  `dist/`, and `build/` allowlisted ([`.gitleaks.toml`](./.gitleaks.toml)).
+  **Fails on any detected secret.**
+- **Semgrep** — static application security testing over the source using the
+  `p/security-audit`, `p/owasp-top-ten`, `p/nodejs`, and `p/typescript` rule
+  packs. **Fails on any ERROR-severity finding.**
+- **OWASP CVE Lite CLI** — scans the JavaScript/TypeScript dependency lockfile
+  for known vulnerabilities. **Fails when any HIGH or CRITICAL vulnerability is
+  found** (`fail-on: high` exits non-zero at or above HIGH; MEDIUM/LOW/UNKNOWN do
+  not fail the build). It emits a SARIF 2.1.0 report and a JSON report.
+
+  **Why OWASP CVE Lite CLI instead of Trivy?** It is purpose-built for
+  JavaScript/TypeScript dependency scanning and is lockfile-aware (reads
+  `package-lock.json` directly, no install needed); it is developer-focused,
+  producing copy-and-run remediation guidance for direct and transitive
+  dependencies rather than just a vulnerability list; it is an **OWASP project**,
+  which fits a security-focused tool; and it is better aligned with this
+  project's Node/TypeScript architecture than a general-purpose container/OS
+  scanner.
+
+Each stage produces a report: SARIF is uploaded to **GitHub Code Scanning** and
+also stored as a build **artifact** (`gitleaks-report`, `semgrep-report`,
+`cve-report`), so findings are visible in the Security tab and downloadable from
+the run. Unit tests and build live in the separate CI workflow (see above).
+
 ## Roadmap
 
 Milestone 1 (current) delivers a clean, secure local MVP. Possible next steps:
@@ -221,6 +265,7 @@ Milestone 1 (current) delivers a clean, secure local MVP. Possible next steps:
 - [ ] Authentication / multi-user support
 - [ ] Export results (JSON / CSV)
 - [x] CI pipeline (test, build, audit) — GitHub Actions
+- [x] DevSecOps security pipeline (Gitleaks, Semgrep, OWASP CVE Lite CLI)
 - [ ] Deployment target for hosted use
 
 ## License

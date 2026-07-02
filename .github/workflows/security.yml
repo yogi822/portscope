@@ -1,0 +1,152 @@
+name: Security
+
+# DevSecOps pipeline. Runs on pushes and PRs to main. Each stage BLOCKS:
+# the workflow fails if any tool reports findings at its configured threshold.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: read the repo, and write SARIF to GitHub Code Scanning.
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ------------------------------------------------------------------
+  # Stage 1 — Gitleaks: detect hard-coded secrets in the whole repo.
+  # Fails the job if any secret is detected.
+  # ------------------------------------------------------------------
+  gitleaks:
+    name: Secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so Gitleaks scans every commit
+
+      - name: Run Gitleaks
+        # Third-party action pinned to a full commit SHA (supply-chain hardening).
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+          # Produce a SARIF report and keep the run least-privilege (no PR comments).
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+      - name: Upload Gitleaks SARIF to Code Scanning
+        if: ${{ always() && hashFiles('results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+          category: gitleaks
+
+      - name: Upload Gitleaks report artifact
+        if: ${{ always() && hashFiles('results.sarif') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: results.sarif
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # Stage 2 — Semgrep: SAST over the source using curated rule packs.
+  # Fails the job on findings with ERROR severity.
+  # ------------------------------------------------------------------
+  semgrep:
+    name: Static analysis (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        run: python -m pip install --disable-pip-version-check semgrep==1.90.0
+
+      # Semgrep respects .gitignore, so node_modules/dist/build are skipped.
+      # --severity=ERROR limits results to ERROR-level rules; --error makes the
+      # step exit non-zero (fail the job) when any such finding exists.
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/nodejs \
+            --config=p/typescript \
+            --severity=ERROR \
+            --sarif --output=semgrep.sarif \
+            --error
+
+      - name: Upload Semgrep SARIF to Code Scanning
+        if: ${{ always() && hashFiles('semgrep.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Upload Semgrep report artifact
+        if: ${{ always() && hashFiles('semgrep.sarif') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep.sarif
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # Stage 3 — CVE scan (OWASP CVE Lite CLI): dependency vulnerability scan.
+  # An OWASP project purpose-built for JS/TS lockfiles. It reads the lockfile
+  # directly (no npm install needed), emits SARIF + JSON, and gates on severity.
+  # Fails the job when HIGH or CRITICAL vulnerabilities are found.
+  # ------------------------------------------------------------------
+  cve:
+    name: CVE dependency scan (OWASP CVE Lite CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Gate + SARIF: the official OWASP action installs the pinned CLI, scans
+      # the lockfile, writes a SARIF 2.1.0 report, and exits non-zero AT OR ABOVE
+      # HIGH severity — so HIGH and CRITICAL fail the job while MEDIUM/LOW/UNKNOWN
+      # do not. The report is written before the non-zero exit, so it can upload.
+      - name: OWASP CVE Lite CLI (SARIF + gate on HIGH/CRITICAL)
+        # Third-party action pinned to a full commit SHA (supply-chain hardening).
+        uses: OWASP/cve-lite-cli@2eed959b8641042472d2810444393b88d5454e62 # v1
+        with:
+          path: .
+          version: "1.25.0"
+          sarif: "true"
+          fail-on: high
+
+      # Always produce a JSON report for the artifact, even if the gate failed.
+      # The CLI prints JSON to stdout; `|| true` keeps this reporting step green.
+      - name: OWASP CVE Lite CLI (JSON report)
+        if: always()
+        run: npx --yes cve-lite@1.25.0 . --json > cve-report.json || true
+
+      # The CLI writes a timestamped .sarif file; point the uploader at the
+      # workspace so it picks up whatever .sarif was produced.
+      - name: Upload CVE SARIF to Code Scanning
+        if: ${{ always() && hashFiles('*.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ github.workspace }}
+          category: cve-lite
+
+      - name: Upload CVE report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cve-report
+          path: |
+            cve-report.json
+            *.sarif
+          if-no-files-found: ignore

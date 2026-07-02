@@ -1,0 +1,15 @@
+# Gitleaks configuration for PortScope.
+# Start from Gitleaks' full default ruleset, then allowlist only commonly-safe
+# generated directories. Nothing else is relaxed.
+title = "PortScope Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore commonly-safe generated directories"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+]
