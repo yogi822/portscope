@@ -215,19 +215,35 @@ DNS resolver, so no real scans run.
 
 In addition to CI, a dedicated **DevSecOps** workflow
 ([`.github/workflows/security.yml`](./.github/workflows/security.yml)) runs on
-every push and pull request to `main`. Each stage is **blocking** — the workflow
-fails if a tool reports findings at its threshold.
+every push and pull request to `main`, on a **weekly schedule** (to catch
+newly-disclosed CVEs), and on manual dispatch. Each stage is **blocking** — the
+workflow fails immediately if a tool reports findings at its threshold.
 
 ```mermaid
 flowchart TD
     Dev[Developer] --> Push[Git Push]
     Push --> GHA[GitHub Actions]
-    GHA --> Tests[Unit Tests]
-    GHA --> Build[Build]
-    GHA --> Gitleaks[Gitleaks]
-    GHA --> Semgrep[Semgrep]
-    GHA --> CVE[OWASP CVE Lite CLI]
+
+    GHA --> CI[CI workflow]
+    GHA --> SEC[Security Pipeline workflow]
+
+    CI --> Tests[Build & Test]
+
+    SEC --> S1[Stage 1 · Secrets — Gitleaks]
+    SEC --> S2[Stage 2 · SAST — Semgrep]
+    SEC --> S3[Stage 3 · Dependencies — OWASP CVE Lite]
+    S1 --> SUM[Security Summary]
+    S2 --> SUM
+    S3 --> SUM
+    SUM --> Scan[SARIF → Code Scanning + artifacts]
 ```
+
+The three security stages share a reusable composite action
+([`.github/actions/publish-security-report`](./.github/actions/publish-security-report/action.yml))
+that uploads each tool's SARIF to Code Scanning and archives its report, and a
+final **Security Summary** job renders a grouped pass/fail table in the run
+summary. Tool and runtime versions are defined once in a workflow-level `env`
+block.
 
 - **Gitleaks** — scans the entire git history for hard-coded secrets (API keys,
   tokens, private keys). Uses the default ruleset with only `node_modules/`,

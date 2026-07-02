@@ -1,0 +1,39 @@
+name: Publish security report
+description: >-
+  Upload a tool's SARIF results to GitHub Code Scanning and archive its report
+  files as a build artifact. Shared by every security stage to keep the
+  pipeline DRY and consistent.
+
+inputs:
+  sarif-file:
+    description: Path to the SARIF file to upload to Code Scanning.
+    required: true
+  category:
+    description: Code Scanning category (keeps each tool's results separate).
+    required: true
+  artifact-name:
+    description: Name of the uploaded report artifact.
+    required: true
+  report-files:
+    description: Newline-separated files/globs to archive as the artifact.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Upload to the Security > Code Scanning tab. Skipped only when the tool
+    # produced no SARIF (e.g. it crashed before writing) — never to hide findings.
+    - name: Upload SARIF to Code Scanning
+      if: ${{ hashFiles(inputs.sarif-file) != '' }}
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: ${{ inputs.category }}
+
+    # Always archive whatever reports exist for later download/audit.
+    - name: Archive report artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.report-files }}
+        if-no-files-found: ignore

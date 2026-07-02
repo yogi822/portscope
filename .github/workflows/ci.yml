@@ -1,27 +1,38 @@
 name: CI
 
-# Run on PRs targeting main and on pushes to main.
+# Quality gate: install, test, and build on every push/PR to main.
+# Security scanning lives in the separate "Security Pipeline" workflow.
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
 
 jobs:
   build-and-test:
-    name: Test & Build
+    name: Build & Test
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          # Built-in npm dependency caching (keyed off package-lock.json).
-          cache: npm
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm # reuse npm cache keyed off package-lock.json
 
       # Nmap is intentionally NOT installed: the test suite uses XML fixtures
       # and an injected fake DNS resolver, so no real scans run in CI.
@@ -35,14 +46,13 @@ jobs:
             npm install
           fi
 
-      - name: Test
+      - name: Run tests
         run: npm test
 
-      - name: Build
+      - name: Build workspaces
         run: npm run build
 
-      # Report vulnerabilities but never fail the build for now (Milestone 2).
-      # `|| true` forces a 0 exit code so the step is genuinely green (no red
-      # annotation), rather than a step-failure masked by continue-on-error.
+      # Advisory only — the blocking dependency gate is OWASP CVE Lite in the
+      # Security Pipeline. This surfaces issues without failing CI.
       - name: Audit dependencies (non-blocking)
         run: npm audit --audit-level=high || true
