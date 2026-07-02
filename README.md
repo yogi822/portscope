@@ -199,7 +199,7 @@ solely responsible for ensuring your scans are lawful and authorized.
 
 Every pull request to `main` and every push to `main` runs a GitHub Actions
 workflow ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) on
-`ubuntu-latest` with Node.js 20. It:
+`ubuntu-latest` with Node.js 22. It:
 
 - installs dependencies (`npm ci` when `package-lock.json` is present, otherwise
   `npm install`), with npm dependency caching;
